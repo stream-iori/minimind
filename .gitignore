@@ -6,3 +6,4 @@ docs-minimind/# pixi environments
 !.pixi/config.toml
 dataset/*
 .idea
+MiniMind2/*
