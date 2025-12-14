@@ -96,7 +96,10 @@ def train_epoch(epoch, loader, iters, teacher_model, lm_config_student, start_st
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif torch.backends.mps.is_available():
+                torch.mps.empty_cache()
 
         if step % args.log_interval == 0 or step == iters - 1:
             spend_time = time.time() - start_time
@@ -139,7 +142,8 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=6, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=32, help="batch size")
     parser.add_argument("--learning_rate", type=float, default=5e-6, help="初始学习率")
-    parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
+    default_device = 'cuda:0' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+    parser.add_argument("--device", type=str, default=default_device, help="训练设备")
     parser.add_argument("--dtype", type=str, default="bfloat16", help="混合精度类型")
     parser.add_argument("--num_workers", type=int, default=1, help="数据加载线程数")
     parser.add_argument("--accumulation_steps", type=int, default=1, help="梯度累积步数")
@@ -174,9 +178,21 @@ if __name__ == "__main__":
     ckp_data = lm_checkpoint(lm_config_student, weight=args.save_weight, save_dir='../checkpoints') if args.from_resume==1 else None
     
     # ========== 3. 设置混合精度 ==========
-    device_type = "cuda" if "cuda" in args.device else "cpu"
+    if "cuda" in args.device:
+        device_type = "cuda"
+    elif "mps" in args.device:
+        device_type = "mps"
+    else:
+        device_type = "cpu"
+
     dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
-    autocast_ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=dtype)
+
+    if device_type == 'cuda':
+        autocast_ctx = torch.cuda.amp.autocast(dtype=dtype)
+    elif device_type == 'mps':
+        autocast_ctx = torch.autocast(device_type='mps', dtype=dtype)
+    else:
+        autocast_ctx = nullcontext()
     
     # ========== 4. 配wandb ==========
     wandb = None
@@ -196,7 +212,14 @@ if __name__ == "__main__":
     Logger(f'教师模型总参数量：{sum(p.numel() for p in teacher_model.parameters()) / 1e6:.3f} M')
     train_ds = SFTDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None
-    scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype == 'float16'))
+    
+    if device_type == 'cuda':
+        scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype == 'float16'))
+    elif device_type == 'mps' and hasattr(torch, 'amp') and hasattr(torch.amp, 'GradScaler'):
+        scaler = torch.amp.GradScaler('mps', enabled=(args.dtype == 'float16'))
+    else:
+        scaler = torch.cuda.amp.GradScaler(enabled=False)
+
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
     
     # ========== 6. 从ckp恢复状态 ==========
