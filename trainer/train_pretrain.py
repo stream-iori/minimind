@@ -52,7 +52,10 @@ def train_epoch(epoch, loader, iters, start_step=0, wandb=None):
             scaler.update()
 
             optimizer.zero_grad(set_to_none=True)
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif torch.backends.mps.is_available():
+                torch.mps.empty_cache()
 
         if step % args.log_interval == 0 or step == iters - 1:
             spend_time = time.time() - start_time
@@ -88,7 +91,8 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1, help="训练轮数（建议1轮zero或2-6轮充分训练）")
     parser.add_argument("--batch_size", type=int, default=32, help="batch size")
     parser.add_argument("--learning_rate", type=float, default=5e-4, help="初始学习率")
-    parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
+    default_device = 'cuda:0' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+    parser.add_argument("--device", type=str, default=default_device, help="训练设备")
     parser.add_argument("--dtype", type=str, default="bfloat16", help="混合精度类型")
     parser.add_argument("--num_workers", type=int, default=1, help="数据加载线程数")
     parser.add_argument("--accumulation_steps", type=int, default=8, help="梯度累积步数")
@@ -116,13 +120,24 @@ if __name__ == "__main__":
     lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=bool(args.use_moe))
     ckp_data = lm_checkpoint(lm_config, weight=args.save_weight, save_dir='../checkpoints') if args.from_resume==1 else None
 
-    # ========== 3. 设置混合精度 ==========
-    device_type = "cuda" if "cuda" in args.device else "cpu"
-    dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
-    autocast_ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=dtype)
-
-    # ========== 4. 配wandb ==========
-    wandb = None
+        # ========== 3. 设置混合精度 ==========
+        if "cuda" in args.device:
+            device_type = "cuda"
+        elif "mps" in args.device:
+            device_type = "mps"
+        else:
+            device_type = "cpu"
+    
+        dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
+    
+        if device_type == 'cuda':
+            autocast_ctx = torch.cuda.amp.autocast(dtype=dtype)
+        elif device_type == 'mps':
+            autocast_ctx = torch.autocast(device_type='mps', dtype=dtype)
+        else:
+            autocast_ctx = nullcontext()
+    
+        # ========== 4. 配wandb ==========    wandb = None
     if args.use_wandb and is_main_process():
         import swanlab as wandb
         wandb_id = ckp_data.get('wandb_id') if ckp_data else None
@@ -134,7 +149,14 @@ if __name__ == "__main__":
     model, tokenizer = init_model(lm_config, args.from_weight, device=args.device)
     train_ds = PretrainDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None
-    scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype == 'float16'))
+    
+    if device_type == 'cuda':
+        scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype == 'float16'))
+    elif device_type == 'mps' and hasattr(torch, 'amp') and hasattr(torch.amp, 'GradScaler'):
+        scaler = torch.amp.GradScaler('mps', enabled=(args.dtype == 'float16'))
+    else:
+        scaler = torch.cuda.amp.GradScaler(enabled=False)
+        
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
     # ========== 6. 从ckp恢复状态 ==========

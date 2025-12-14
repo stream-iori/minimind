@@ -7,3 +7,4 @@ docs-minimind/# pixi environments
 dataset/*
 .idea
 MiniMind2/*
+*.safetensors
