@@ -16,7 +16,7 @@ def convert_torch2transformers_minimind(torch_path, transformers_path, dtype=tor
     MiniMindConfig.register_for_auto_class()
     MiniMindForCausalLM.register_for_auto_class("AutoModelForCausalLM")
     lm_model = MiniMindForCausalLM(lm_config)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
     state_dict = torch.load(torch_path, map_location=device)
     lm_model.load_state_dict(state_dict, strict=False)
     lm_model = lm_model.to(dtype)  # 转换模型权重精度
@@ -30,7 +30,7 @@ def convert_torch2transformers_minimind(torch_path, transformers_path, dtype=tor
 
 # LlamaForCausalLM结构兼容第三方生态
 def convert_torch2transformers_llama(torch_path, transformers_path, dtype=torch.float16):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
     state_dict = torch.load(torch_path, map_location=device)
     llama_config = LlamaConfig(
         vocab_size=lm_config.vocab_size,

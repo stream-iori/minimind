@@ -170,7 +170,10 @@ if __name__ == "__main__":
     parser.add_argument('--max_seq_len', default=8192, type=int, help="最大序列长度")
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
     parser.add_argument('--inference_rope_scaling', default=False, action='store_true', help="启用RoPE位置编码外推（4倍，仅解决位置编码问题）")
-    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu', type=str, help="运行设备")
+    parser.add_argument('--gpus', default="0", type=str, help="CUDA_VISIBLE_DEVICES")
+    default_device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+    parser.add_argument('--device', default=default_device, type=str, help="运行设备")
+    
     args = parser.parse_args()
     device = args.device
     model, tokenizer = init_model(args)
